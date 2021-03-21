@@ -1,7 +1,7 @@
 ---
 title: "Topf2018.Dataanalysis_FINALforPUBLI"
 author: "Lukas Wille"
-date: "1/2/2020"
+date: "`r format(Sys.Date(), '%d/%m/%y')`"
 output:
   pdf_document: default
   html_document: default
@@ -17,6 +17,7 @@ library(tidyr)
 library(purrr)
 library(reshape2)
 library(ggplot2)
+library(ggpmisc)
 library(gridExtra) # fuer grid.arrange
 library(LambertW)
 library(emmeans)
@@ -33,12 +34,12 @@ library(mgcv)
 
 ```{r WD setup, echo=FALSE, error=TRUE}
 setwd("~/ownCloud/FiblWulche/Dataanalysis/Topfversuch2018/FinalAnalysisforPubli") # MAC
-setwd("C:/Users/lukas.wille/ownCloud/FiblWulche/Dataanalysis/Topfversuch2018/FinalAnalysisforPubli") # WIN
+#setwd("C:/Users/lukas.wille/ownCloud/FiblWulche/Dataanalysis/Topfversuch2018/FinalAnalysisforPubli") # WIN
 ```
 
 ```{r Read-in ready Data, echo=FALSE, warning=FALSE, error=TRUE}
 setwd("~/ownCloud/FiblWulche/Dataanalysis/Topfversuch2018/DataframeszumSchaffe")    # MAC
-setwd("C:/Users/lukas.wille/ownCloud/FiblWulche/Dataanalysis/Topfversuch2018/DataframeszumSchaffe") # WIN
+#setwd("C:/Users/lukas.wille/ownCloud/FiblWulche/Dataanalysis/Topfversuch2018/DataframeszumSchaffe") # WIN
 
 # Phenotypic data
 Topf18.S <- readRDS("Topf18.S.rds")
@@ -73,7 +74,7 @@ fungKolor = c("#A1D99B", "#800026", "darkgreen", "#FC9272", "#3399FF", "#C994C7"
 ```
 
 
-# Analysis of shoot dry weight (SDW) - S vs NS treatment
+# Analysis of shoot dry weight (SDW) - S vs NS treatment --> FIGURE S1
 
 I use this analysis to show that the 3 sick soils are sick, and Feldbach healthy. This gives a Supplementary figure.
 https://authorservices.wiley.com/asset/photos/electronic_artwork_guidelines.pdf
@@ -93,10 +94,12 @@ plotSDW <- ggplot(aes(treat, s.dw.1), data=Topf18.4.8) +
   ggpubr::stat_compare_means(method = "t.test", label.y = 0.6)   # to directly plot p-values of t.test into plot :) For New Phyt I should give the df's as well, however, I do not see that in all the published papers...
 
 plotSDW
-#ggsave("SDW_SvsNS_in4soils.eps", plotSDW, units="cm", width=18, height=18, dpi=300, device = "eps")    # I save only once. 80mm width is one col in New Phytologist; 180mm is two cols
+#ggsave("SDW_SvsNS_in4soils.eps", plotSDW, units="cm", width=18, height=10, dpi=600, device = "eps")    # I save only once. 80mm width is one col in New Phytologist; 180mm is two cols
+#ggsave("SDW_SvsNS_in4soils.png", plotSDW, units="cm", width=18, height=10, dpi=200) #png
+#ggsave("SDW_SvsNS_in4soils.jpg", plotSDW, units="cm", width=18, height=10, dpi=200) #jpg
 ```
 
-
+\newpage
 # Analysis of relative shoot dry weight (SDWRel)
 
 ## Summarize SDWrel (N, mean +- SD)
@@ -113,16 +116,114 @@ sumbysoilacc_SDWrel
 -> C2 in F and W has two observations (all others have 3 at least). I leave C2 in for the analysis of SDWRel.
 
 
+## Regression/ANOVA of SDWrel with factor 'acc'
+-> Original SDWRel data is Lambert W x Fx transformed ("Gaussianized", Goerg 2015)
 
-## Plot SDWrel: 4 soils over 8 genotypes & 4 soils-8 genotypes individually: Mean +- SE
+```{r Gaussianize SDWRel, echo=FALSE, message=FALSE}
+# reduce dataset to variable in focus and design variables
+Topf18.4.8.NS.SDWRel.GAUSS <- Topf18.4.8.NS[,c(1:10,27)]
 
-```{r  beautiful SDWRel plot, echo=FALSE}
+p <- Topf18.4.8.NS.SDWRel.GAUSS[,c(2,11)]  # only LABEL and SDWrel
+p <- p[complete.cases(p), ]   # the Gaussianize function does not work with NAs; so I take them out, and put them back after the whole procedure
+
+# do the transformation
+G_List_SDWRel <- LambertW::Gaussianize(p[,2], type="hh", method = "MLE", return.tau.mat = TRUE)
+p$SDWRel_G<-as.vector(G_List_SDWRel$input) 
+Topf18.4.8.NS.SDWRel.GAUSS <- merge(Topf18.4.8.NS.SDWRel.GAUSS, p[c("LABEL", "SDWRel_G")], all.x=TRUE)
+
+# Remove objects
+rm(p)
+```
+
+After transformation I  do the linear Model:
+
+```{r formulate the Model and get Anova 4 soils acc, echo=FALSE, message=FALSE}
+LM.48.SDW_G <- lm(SDWRel_G ~ soil * acc + rep, Topf18.4.8.NS.SDWRel.GAUSS,
+                     contrasts=list(soil=contr.sum, acc=contr.sum, rep=contr.sum))   # the "contrasts" statement needs to be set like this for proper calculation of Anova type III
+car::Anova(LM.48.SDW_G, type="III")
+
+#Model diagnostic via residuals
+par(mfrow=c(1,2))
+scatter.smooth(fitted(LM.48.SDW_G), resid(LM.48.SDW_G)); abline(h=0,lty=2)
+title("Tukey-Anscombe Plot")
+car::qqPlot(resid(LM.48.SDW_G), pch=3, cex=0.5, id=list(n=5, cex=0.7, col="red"), line="quartiles")
+```
+
+Result: soil & acc are signf.; interaction not. Residuals look ok.
+
+## Post-hoc analysis: Planned contrasts between resistant and susceptible genotypes for each soil
+
+```{r posthoc SDW orthogonal reslevel within soil, echo=FALSE, message=FALSE}
+
+emm.LM.SoilxAcc.SDW_G <- emmeans(LM.48.SDW_G, c("acc", "soil"))
+levels(Topf18.4.8.NS.SDWRel.GAUSS$acc)  # check the order of the accs: "C1" "C2" "G78" "G89" "S134" "S22" "S64" "S91" -> in order to specify the dummy variables for the contrasts correctly
+Contrasts = list(Res_vs_susceptible = c(1/5, -1/3, 1/5, -1/3, 1/5, -1/3, 1/5, 1/5))  # I need to specify the contrasts so that the 5 resistant and the 3 susceptible genotypes sum-up to 0.
+contrast(emm.LM.SoilxAcc.SDW_G, Contrasts, by="soil")
+
+```
+
+I see that R-S do not significantly differ in F. But S are significantly lower than R in the three infested soils.  
+ 
+
+## Regression/ANOVA of SDWrel with factor 'reslevel'
+-> to test differences between the two groups resistant and susceptible a new model is fit where the factor 'acc' is replaced by 'reslevel'  
+
+```{r formulate the Model and get Anova 4 soils resistance, echo=FALSE, message=FALSE}
+LM.48.SDW_G_reslevel <- lm(SDWRel_G ~ soil * reslevel + rep, Topf18.4.8.NS.SDWRel.GAUSS,
+                     contrasts=list(soil=contr.sum, reslevel=contr.sum, rep=contr.sum))   # the "contrasts" statement needs to be set like this for proper calculation of Anova type III
+car::Anova(LM.48.SDW_G_reslevel, type="III")
+
+#Model diagnostic via residuals
+par(mfrow=c(1,2))
+scatter.smooth(fitted(LM.48.SDW_G_reslevel), resid(LM.48.SDW_G_reslevel)); abline(h=0,lty=2)
+title("Tukey-Anscombe Plot")
+car::qqPlot(resid(LM.48.SDW_G_reslevel), pch=3, cex=0.5, id=list(n=5, cex=0.7, col="red"), line="quartiles")
+```
+
+-> soil, reslevel & interaction are significant. Residuals look ok.  
+I do not show this result in the publication. However, the post-hoc analysis of reslevel within each soil is interesting:
+
+```{r reslevel 4 soils post-hoc, echo=FALSE, message=FALSE}
+
+emm.LM.SoilxAcc.SDW_G_reslevel <- emmeans(LM.48.SDW_G_reslevel, c("soil", "reslevel"))
+POSTHOC_SDW_G_TukeySoilxAcc_reslevel <- contrast(emm.LM.SoilxAcc.SDW_G_reslevel, method="pairwise", by="soil")
+POSTHOC_SDW_G_TukeySoilxAcc_reslevel
+
+```
+
+
+## Regression/ANOVA of SDWrel only in the 3 infested soils with factor 'acc
+
+```{r formulate the Model and get Anova 3 soils acc, echo=FALSE, message=FALSE}
+LM.48.SDW_G_3sick <- lm(SDWRel_G ~ soil * acc + rep, Topf18.4.8.NS.SDWRel.GAUSS[Topf18.4.8.NS.SDWRel.GAUSS$soil!="F",],
+                     contrasts=list(soil=contr.sum, acc=contr.sum, rep=contr.sum))   # the "contrasts" statement needs to be set like this for proper calculation of Anova type III
+car::Anova(LM.48.SDW_G_3sick, type="III")
+
+#Model diagnostic via residuals
+par(mfrow=c(1,2))
+scatter.smooth(fitted(LM.48.SDW_G_3sick), resid(LM.48.SDW_G_3sick)); abline(h=0,lty=2)
+title("Tukey-Anscombe Plot")
+car::qqPlot(resid(LM.48.SDW_G_3sick), pch=3, cex=0.5, id=list(n=5, cex=0.7, col="red"), line="quartiles")
+```
+In order to compare the genotypic means in the 3 sick soils post-hoc analysis (Tukeys HSD) are done. Because there is no significant soil x acc interaction, estimated means are calculated for each genotype over the 3 sick soils (note the warning of the emmeans() function)
+
+```{r post hoc analysis 3 sick soils acc, echo=FALSE, message=FALSE}
+
+#contrast(emmeans(LM.48.SDW_G_3sick, ~ acc), method="pairwise")
+(ph <- as.data.frame(multcomp::cld(emmeans(LM.48.SDW_G_3sick, "acc"), alpha=0.05, Letters=letters, decreasing = TRUE, adjust="tukey")))  # letter display for the pairwise testing - I save this df for use in the plot futher up
+```
+
+
+
+## Plot SDWrel: 4 soils over 8 genotypes & 4 soils-8 genotypes individually: Mean +- SE --> FIGURE 1
+
+```{r  beautiful SDWRel plot, echo=FALSE, message=FALSE}
 
 #Panel A: The boxplot of the 4 soils
 gh <- ggplot() +
   geom_boxplot(data = Topf18.4.8.NS, aes(x = soil, y = s.dw.ratioSNS, fill = soil), outlier.size = 0.5) +
   stat_summary(data = Topf18.4.8.NS, aes(x = soil, y = s.dw.ratioSNS), fun=mean, geom="point", shape=4, size=2) +
-  scale_fill_manual(values = Kolor) +
+  scale_fill_manual(values = Kolor, labels = soil_names) +
   theme_classic() +
   scale_y_continuous(sec.axis = dup_axis(breaks = 0),        # put a fake right y-axis as border...
                      expand = c(0, 0),
@@ -140,27 +241,29 @@ gh <- ggplot() +
         legend.title = element_blank(),
         panel.background =  element_blank(),
         panel.grid = element_blank()) +
-  labs(tag="A",
+  labs(tag="(a)",
        y=expression(SDW[italic(Rel.)]),
        x=expression("Soil")) +
   annotate("text", x = 1, y = 1.8, label = "a",  size=3) +
   annotate("text", x = 2, y = 1.6, label = "bc", size=3) +
   annotate("text", x = 3, y = 1.5, label = "c",  size=3) +
-  annotate("text", x = 4, y = 1.7, label = "b",  size=3)
+  annotate("text", x = 4, y = 1.7, label = "b",  size=3) +
+  guides(fill = guide_legend(ncol = 2))
 
-#Panel B: The kindofainteractionplot showing the genotypes -> this plot also generates the legend for both panels
+
+# Panel B: The kindofainteractionplot showing the genotypes -> this plot also generates the legend for both panels
 sum <- sumbysoilacc_SDWrel
 sum <- sum %>% mutate(se=sd/sqrt(N_not_NA))   #add SE to the sum file
-#sum$acc <- factor(sum$acc, c("resistant", "C1", "S91", "S134", "S64", "G78", "susceptible", "C2", "S22", "G89")) #the empty "fake" factors are placeholders for the legend before 18.1.21
-sum$acc <- factor(sum$acc, c("resistant", "S91", "S134", "G78", "C1", "S64", "susceptible", "G89", "S22", "C2")) # from 18.1.21 on
+sum$acc <- factor(sum$acc, c("resistant", "S91", "S134", "G78", "C1", "S64", "susceptible", "G89", "S22", "C2", "", " ")) # #the empty "fake" factors are placeholders for the legendfrom 18.1.21 on
 
 
+# do the plot!
 
 gc <- ggplot(data = sum) +
 geom_linerange(aes(x = acc, ymin = mean - se, ymax = mean + se, color = soil)) +
 geom_point(aes(x = acc, y = mean, shape = acc, color = soil), size=1.5) +
 facet_wrap(~soil, nrow = 1, labeller = labeller(soil = soil_names)) +
-scale_shape_manual(values = c(NA, 19, 15, 18, 17, 20, NA, 2, 1, 0), drop=FALSE) +   # !
+scale_shape_manual(values = c(NA, 19, 15, 18, 17, 20, NA, 2, 1, 0, NA, NA), drop=FALSE) +   # !
 scale_color_manual(values = Kolor, labels = soil_names) +
 scale_fill_manual(labels = soil_names) +
 theme_classic() +
@@ -179,132 +282,159 @@ theme(
       axis.text.y = element_blank(),
       axis.ticks.y.right = element_blank(),
       panel.spacing = unit(0, "lines"),
+      panel.background =  element_blank(),
+      panel.grid = element_blank(),
       strip.background = element_blank(),
       strip.text.x = element_blank(),
       legend.title = element_blank(),
-      panel.background =  element_blank(),
-      panel.grid = element_blank()
+      legend.spacing.y = unit(0, "cm"),
+      legend.spacing.x = unit(-0.15, "cm"),
+      legend.key.size = unit(1.2, 'lines'),
+      legend.text = element_text(size=6),
+      legend.margin = margin(0, 0, 0, 0)
       ) +
-labs(tag="B",
+labs(tag="(b)",
         y=expression(""),
         x=expression("Genotype")) +
-guides(#shape = guide_legend(ncol = 1, override.aes = list(shape = c(NA, 17, 19, 15, 20, 18, NA, 0, 1, 2))),
-       shape = guide_legend(ncol = 1, override.aes = list(shape = c(NA, 19, 15, 18, 17, 20, NA, 2, 1, 0))),
-  color = guide_legend(ncol = 1, override.aes = list(shape = c(rep(20,4)), size=2)))
+  geom_text(data=data.frame(soil="F"), color=Kolor[1], label=expression(paste(italic(P[R-S]), " = .68")), x=4.5, y=0, size=2, parse = TRUE) +
+  geom_text(data=data.frame(soil="H"), color=Kolor[2], label=expression(paste(italic(P[R-S]), " < .001")), x=4.5, y=0, size=2, parse = TRUE) +
+  geom_text(data=data.frame(soil="L"), color=Kolor[3], label=expression(paste(italic(P[R-S]), " = .01")), x=4.5, y=0, size=2) +
+  geom_text(data=data.frame(soil="W"), color=Kolor[4], label=expression(paste(italic(P[R-S]), " = .006")), x=4.5, y=0, size=2) +
+  guides(shape = guide_legend(ncol = 2, override.aes = list(shape = c(NA, 19, 15, 18, 17, 20, NA, 2, 1, 0, NA, NA))),
+         color = guide_legend(ncol = 2, override.aes = list(linetype = c(0,0))))
+
+         
+
+  
+# add post-hoc table
+#prepare the post-hoc table with the genotypic means
+phtable <- ph[,c(1,2,7)]  # this "ph" df is produced in the post-hoc analysis after ANOVA (code line 427; I know, this is stupid coding...) of the three sick soils. it contains emmeans, but I want means:
+sumSDWacc <- Topf18.4.8.3sick %>% group_by(acc) %>% summarise(meanSDW = mean(s.dw.ratioSNS, na.rm=TRUE))
+sumSDWacc$meanSDW <- round(sumSDWacc$meanSDW, 2)
+
+phtable <- inner_join(phtable[,c(1,3)], sumSDWacc, by="acc") # replace emmenas by means
+phtable <- phtable[,c(1,3,2)]
+colnames(phtable)[3] <- "group"
+
+phtable$group <- c("   d", "  cd", " bcd", "abc ", "abc ", "ab  ", "a   ", "a   ")  # I can't believe that I am doing this :)
+
+phtable <- phtable[order(phtable$meanSDW, decreasing = TRUE),]
+
+# little function "annotation2"
+annotation_custom2 <- function (grob, xmin = -Inf, xmax = Inf, ymin = -Inf, ymax = Inf, data) { 
+    layer(data = data, stat = StatIdentity, position = PositionIdentity, 
+          geom = ggplot2:::GeomCustomAnn,
+          inherit.aes = TRUE, params = list(grob = grob, 
+                                            xmin = xmin, xmax = xmax, 
+                                            ymin = ymin, ymax = ymax))
+  } 
+
+tg <- tableGrob(phtable, rows=NULL, cols=NULL, theme = ttheme_minimal(base_size=6, padding = unit(c(1,1), "mm")), )
+gcplus <- gc + annotation_custom2(tg, data=data.frame(soil="L"), xmin = 1, xmax = 8, ymin = 1.3, ymax = 2.3)
+
 
 #put the two panels A + B  & Save
-#get legends (note the 4 soils legend is already in the big panel), and arrange them together
-
 props <- ggpubr::ggarrange(gh + theme(legend.position="none"),
-                           gc,
+                           gcplus,
                            widths = c(1,4,3),
                            nrow=1)
-#ggsave("SDWrelBoxplotwithInteractionplot_UNFERTIG.tiff", props, units="cm", width=18, height=6, dpi=300, compression="lzw")    # I save only once. "UNFERTIG" weil noch weiterbearbeitet in gimp
+
+props
+
+#ggsave("SDWrelBoxplotwithInteractionplo.eps", props, units="cm", width=18, height=6, dpi=600)    # I save only once. 
+#ggsave("SDWrelBoxplotwithInteractionplo.png", props, units="cm", width=18, height=6, dpi=200)  #png
 ```
 
 
+### Plot RRI, again for soils and for accs in soils  --> FIGURE S2
+.  
 
-## Regression/ANOVA of SDWrel with factor 'acc'
--> Original SDWRel data is Lambert W x Fx transformed ("Gaussianized", Goerg 2015)
+```{r suppFig RRI, echo=FALSE, message=FALSE, warning=FALSE}
+# Panel A: The boxplot of the 4 soils
+rh <- ggplot(data = Topf18.4.8.NS, aes(x = soil, y = r.aspectMEDIAN, color = soil, fill = soil)) +
+  geom_violin(alpha = 0.3) +                                # for the RRI I make a Violinplot as there is no IQR an dboxplot does not make sense
+  geom_jitter(width = 0.25, size=1) +
+  scale_fill_manual(values = Kolor) +
+  scale_color_manual(values = Kolor) +
+  theme_classic() +
+  scale_y_continuous(sec.axis = dup_axis(breaks = 0),        # put a fake right y-axis as a panel border...
+                     expand = c(0, 0),
+                     breaks = c(0,1,2,3,4,5)) +                     
+  coord_cartesian(ylim = c(0, 6)) +                         # set explicit range of the y axis (aka the left and right border)
+  geom_hline(yintercept = 6) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y.right = element_blank(),               # hide right axis title
+        axis.text.y.right = element_blank(),
+        axis.ticks.y.right = element_blank(),
+        legend.position = "none",                           # this panel has no legend, as it will use the one from the panel B
+        legend.title = element_blank(),
+        panel.background =  element_blank(),
+        panel.grid = element_blank()) +
+  labs(tag="(a)",
+       y=expression(RRI),
+       x=expression("Soil")) +
+  annotate("text", x = 1, y = 0.5, label = "a") +           # put some significance letters
+  annotate("text", x = 2, y = 1.1, label = "bc") +
+  annotate("text", x = 3, y = 1.2, label = "c") +
+  annotate("text", x = 4, y = 1, label = "b")
 
-```{r Gaussianize SDWRel}
-# reduce dataset to variable in focus and design variables
-Topf18.4.8.NS.SDWRel.GAUSS <- Topf18.4.8.NS[,c(1:10,27)]
+# Panel B: The kindofainteractionplot showing the genotypes -> this plot generates the legend for both panels
+sumbysoilacc_RRI <- Topf18.4.8.NS %>% group_by(soil, acc) %>%
+  summarise(N_not_NA = sum(!is.na(r.aspectMEAN)),
+            mean= mean(r.aspectMEAN, na.rm = TRUE),
+            sd = sd(r.aspectMEAN, na.rm = TRUE))
 
-p <- Topf18.4.8.NS.SDWRel.GAUSS[,c(2,11)]  # only LABEL and SDWrel
-p <- p[complete.cases(p), ]   # the Gaussianize function does not work with NAs; so I take them out, and put them back after the whole procedure
+sumr <- sumbysoilacc_RRI
+sumr <- sumr %>% mutate(se=sd/sqrt(N_not_NA))                        # add SE to the sum file
+sumr$acc <- factor(sumr$acc, c("resistant", "S91", "S134", "G78", "C1", "S64", "susceptible", "G89", "S22", "C2", "", " "))
 
-# do the transformation
-G_List_SDWRel <- LambertW::Gaussianize(p[,2], type="hh", method = "MLE", return.tau.mat = TRUE)
-p$SDWRel_G<-as.vector(G_List_SDWRel$input) 
-Topf18.4.8.NS.SDWRel.GAUSS <- merge(Topf18.4.8.NS.SDWRel.GAUSS, p[c("LABEL", "SDWRel_G")], all.x=TRUE)
-
-# Remove objects
-rm(p)
-```
-
-After transformation I  do the linear Model:
-
-```{r formulate the Model and get Anova 4 soils acc}
-LM.48.SDW_G <- lm(SDWRel_G ~ soil * acc + rep, Topf18.4.8.NS.SDWRel.GAUSS,
-                     contrasts=list(soil=contr.sum, acc=contr.sum, rep=contr.sum))   # the "contrasts" statement needs to be set like this for proper calculation of Anova type III
-car::Anova(LM.48.SDW_G, type="III")
-
-#Model diagnostic via residuals
-par(mfrow=c(1,2))
-scatter.smooth(fitted(LM.48.SDW_G), resid(LM.48.SDW_G)); abline(h=0,lty=2)
-title("Tukey-Anscombe Plot")
-car::qqPlot(resid(LM.48.SDW_G), pch=3, cex=0.5, id=list(n=5, cex=0.7, col="red"), line="quartiles")
-```
-
-Result: soil & acc are signf.; interaction not. Residuals look ok.
-
-## Post-hoc analysis: Planned contrasts between resistant and susceptible genotypes for each soil
-
-```{r posthoc SDW orthogonal reslevel within soil}
-
-emm.LM.SoilxAcc.SDW_G <- emmeans(LM.48.SDW_G, c("acc", "soil"))
-levels(Topf18.4.8.NS.SDWRel.GAUSS$acc)  # check the order of the accs: "C1" "C2" "G78" "G89" "S134" "S22" "S64" "S91" -> in order to specify the dummy variables for the contrasts correctly
-Contrasts = list(Res_vs_susceptible = c(1/5, -1/3, 1/5, -1/3, 1/5, -1/3, 1/5, 1/5))  # I need to specify the contrasts so that the 5 resistant and the 3 susceptible genotypes sum-up to 0.
-contrast(emm.LM.SoilxAcc.SDW_G, Contrasts, by="soil")
-
-```
-
-I see that R-S do not significantly differ in F. But S are significantly lower than R in the three infested soils.  
- 
-
-## Regression/ANOVA of SDWrel with factor 'reslevel'
--> to test differences between the two groups resistant and susceptible a new model is fit where the factor 'acc' is replaced by 'reslevel'  
-
-```{r formulate the Model and get Anova 4 soils resistance}
-LM.48.SDW_G_reslevel <- lm(SDWRel_G ~ soil * reslevel + rep, Topf18.4.8.NS.SDWRel.GAUSS,
-                     contrasts=list(soil=contr.sum, reslevel=contr.sum, rep=contr.sum))   # the "contrasts" statement needs to be set like this for proper calculation of Anova type III
-car::Anova(LM.48.SDW_G_reslevel, type="III")
-
-#Model diagnostic via residuals
-par(mfrow=c(1,2))
-scatter.smooth(fitted(LM.48.SDW_G_reslevel), resid(LM.48.SDW_G_reslevel)); abline(h=0,lty=2)
-title("Tukey-Anscombe Plot")
-car::qqPlot(resid(LM.48.SDW_G_reslevel), pch=3, cex=0.5, id=list(n=5, cex=0.7, col="red"), line="quartiles")
-```
-
--> soil, reslevel & interaction are significant. Residuals look ok.  
-I do not show this result in the publication. However, the post-hoc analysis of reslevel within each soil is interesting:
-
-```{r reslevel 4 soils post-hoc}
-
-emm.LM.SoilxAcc.SDW_G_reslevel <- emmeans(LM.48.SDW_G_reslevel, c("soil", "reslevel"))
-POSTHOC_SDW_G_TukeySoilxAcc_reslevel <- contrast(emm.LM.SoilxAcc.SDW_G_reslevel, method="pairwise", by="soil")
-POSTHOC_SDW_G_TukeySoilxAcc_reslevel
-
-```
-
-
-
+#plot it
+rc <- ggplot(data = sumr) +
+  geom_linerange(aes(x = acc, ymin = mean - se, ymax = mean + se, color = soil)) +   # this is only the line spanning the SE
+  geom_point(aes(x = acc, y = mean, shape = acc, color = soil)) +                    # this is the Mean; a symbol for every genotype 
+  facet_wrap(~soil, nrow = 1) +
+  scale_shape_manual(values = c(NA, 19, 15, 18, 17, 20, NA, 2, 1, 0, NA, NA), drop=FALSE) +   # !                    # give solid shape to resistant, open ones to susceptible lines
+  scale_color_manual(values = Kolor, labels = soil_names) +
+  scale_fill_manual(labels = soil_names) +
+  theme_classic() +
+  scale_y_continuous(labels = function(x){paste(x, "-")},    
+                     sec.axis = dup_axis(breaks = 0),        
+                     expand = c(0, 0),
+                     breaks = c(0,1,2,3,4,5)) +                                      # put a fake right y-axis as border...
+  coord_cartesian(ylim = c(0, 6)) +  # set explicit range
+  geom_hline(yintercept = 6) +
+  theme(axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.title.y.right = element_blank(),                                        # hide right axis title
+        axis.text.y = element_blank(),
+        axis.ticks.y.right = element_blank(),
+        panel.spacing = unit(0, "lines"),
+        strip.background = element_blank(),
+        strip.text.x = element_blank(),
+        legend.title = element_blank(),
+        panel.background =  element_blank(),
+        panel.grid = element_blank(),
+        legend.spacing.x = unit(0.02, 'cm'),
+        legend.spacing.y = unit(0.02, 'cm')) +
+  labs(tag="(b)",
+       y=expression(""),
+       x=expression("Genotype")) +
+  guides(shape = guide_legend(ncol = 2, override.aes = list(shape = c(NA, 19, 15, 18, 17, 20, NA, 2, 1, 0, NA, NA))),
+         color = guide_legend(ncol = 2, override.aes = list(linetype = c(0,0))))
 
 
-## Regression/ANOVA of SDWrel only in the 3 infested soils with factor 'acc
 
-```{r formulate the Model and get Anova 3 soils acc}
-LM.48.SDW_G_3sick <- lm(SDWRel_G ~ soil * acc + rep, Topf18.4.8.NS.SDWRel.GAUSS[Topf18.4.8.NS.SDWRel.GAUSS$soil!="F",],
-                     contrasts=list(soil=contr.sum, acc=contr.sum, rep=contr.sum))   # the "contrasts" statement needs to be set like this for proper calculation of Anova type III
-car::Anova(LM.48.SDW_G_3sick, type="III")
+## put the two panels A + B  & Save
+props2 <- ggpubr::ggarrange(rh, rc, widths = c(1,4))
+#ggsave("RRI_BoxplotwithInteractionplot.eps", props2, units="cm", width=18, height=6, dpi=600)    # I save only once.
+#ggsave("RRI_BoxplotwithInteractionplot.png", props2, units="cm", width=18, height=6, dpi=200)    # png
+#ggsave("RRI_BoxplotwithInteractionplot.jpg", props2, units="cm", width=18, height=6, dpi=200)    # jpg
 
-#Model diagnostic via residuals
-par(mfrow=c(1,2))
-scatter.smooth(fitted(LM.48.SDW_G_3sick), resid(LM.48.SDW_G_3sick)); abline(h=0,lty=2)
-title("Tukey-Anscombe Plot")
-car::qqPlot(resid(LM.48.SDW_G_3sick), pch=3, cex=0.5, id=list(n=5, cex=0.7, col="red"), line="quartiles")
-```
-In order to compare the genotypic means in the 3 sick soils post-hoc analysis (Tukeys HSD) are done. Because there is no significant soil x acc interaction, estimated means are calculated for each genotype over the 3 sick soils (note the warning of the emmeans() function)
-
-```{r post hoc analysis 3 sick soils acc}
-
-#contrast(emmeans(LM.48.SDW_G_3sick, ~ acc), method="pairwise")
-multcomp::cld(emmeans(LM.48.SDW_G_3sick, ~ acc), alpha=0.05, Letters=letters, adjust="tukey")  # letter display for the pairwise testing
 ```
 
 
+\newpage
 # Analysis of qPCR data
 
 ## Summary of qPCR data (mean & SD for each genotype in each soil) -> Supp Tab 5 (for this table I used the full data including data on C2 in F & W soils)
@@ -342,14 +472,14 @@ sum.fungi.mean.sd <- Topf18.FUNGI %>% group_by(soil, acc) %>%
 
 For the data analysis, I kick-out entries for C2 in F and W, because I only have 1-2 reps per taxa in F soil and only 1 rep for each taxa in W soil.
 
-```{r clean data}
+```{r clean data, echo=FALSE}
 Topf18.FUNGI[Topf18.FUNGI$soil=="F" & Topf18.FUNGI$acc=="C2",7:36] <- NA
 Topf18.FUNGI[Topf18.FUNGI$soil=="W" & Topf18.FUNGI$acc=="C2",7:36] <- NA
 ```
 
-### Plot: Stacks of the fungi
+### Plot: Stacks of the fungi --> FIGURE 2
 
-```{r plot stacks, message=FALSE}
+```{r plot stacks, echo=FALSE, message=FALSE}
 # prep data
 sum.fungi.accsoil <- Topf18.FUNGI %>% group_by(soil, acc) %>%
   summarise(Apha= mean(Apha, na.rm = TRUE),
@@ -397,11 +527,22 @@ stacks <- ggplot(sum.fungi.accsoil.long, aes(x = acc, fill=variable)) +
         axis.text.x = element_text(angle=45, size = 6, vjust=1),
         axis.text.y = element_text(size=5),
         axis.ticks.y = element_blank()) +
-  labs(y=expression(paste("Microbial quantities")))
+  labs(y=expression(paste("Microbial quantities"))) +
+  theme(plot.margin = unit(c(1,1,2,1), "lines")) +
+  geom_text(data=data.frame(soil="F"), label="NA", x=8, y=150, size=2.5, inherit.aes = FALSE) +
+  geom_text(data=data.frame(soil="W"), label="NA", x=8, y=150, size=2.5, inherit.aes = FALSE) +
+  annotation_custom(ggpubr::text_grob("resistant", size=6),
+                    xmin=2.5,xmax=2.5,ymin=-770,ymax=-770) +
+  annotation_custom(ggpubr::text_grob("susc.", size=6),
+                    xmin=7,xmax=7,ymin=-770,ymax=-770) +
+  annotation_custom(grid::linesGrob(), xmin = 0.25, xmax = 5.25, ymin = -690, ymax = -690) +
+  annotation_custom(grid::linesGrob(gp=grid::gpar(lty=2)), xmin = 5.75, xmax = 8.25, ymin = -690, ymax = -690) +
+  coord_cartesian(clip = "off")
 
 stacks
-#ggsave("fungiStack_NS_unfertig.tiff", stacks, units="cm", width=18, height=6, dpi=300, compression = 'lzw')    # I save only once.
-rm(stacks)
+#ggsave("fungiStack_NS.eps", stacks, units="cm", width=18, height=7, dpi=600)    # I save only once.
+#ggsave("fungiStack_NS.png", stacks, units="cm", width=18, height=7, dpi=200)    # png
+#ggsave("fungiStack_NS.jpg", stacks, units="cm", width=18, height=7, dpi=200)    # jpg
 ```
 
 ### NMDS
@@ -409,7 +550,7 @@ rm(stacks)
 #### First, Data prep: make a DF that contains the mean fungal quants and phenotypic data (SDWRel & RRI) -> "COMBO".
 
 
-```{r Combo DF}
+```{r Combo DF, echo=FALSE}
 
 Topf18.FUNGI.MEANS <- Topf18.FUNGI[,c(1,2,3,4,5,6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36)]  # this DF contains the mean (between ONE & TWO) qPCR values for each sample only
 
@@ -452,7 +593,7 @@ rm(xxx)
 ```
 
 ...some more prep...
-```{r prep data for NMDS}
+```{r prep data for NMDS, echo=FALSE}
 # Prep data: bring factors in good order for plotting
 Topf18.COMBO.NS.NONA$acc <- factor(Topf18.COMBO.NS.NONA$acc, c("C1", "S91", "S134", "S64", "G78", "C2", "S22", "G89"))  # put genotypes in right order for plotting
 Topf18.COMBO.NS.NONA$reslevel <- dplyr::recode(Topf18.COMBO.NS.NONA$reslevel, R = "resistant", S = "susceptible")
@@ -463,9 +604,9 @@ Topf18.COMBO.NS.NONA.xxx <- subset(Topf18.COMBO.NS.NONA.xxx, !(soil=="W" & acc==
 
 ```
 
-#### Second, do the NMDS & PERMANOVA: 5 Plots are produced; 1 over 4 soils, as an inset in the 3 soil plot; 1 over 3 soils and then 3 plots for each of the infested soils.... Env.fit arrows are added for the the five fungi with the highest r2 with the ordination. PERMANOVA R2 for the factors soi, acc or reslevel are added as well with corresponding p-vals.
+#### Second, do the NMDS & PERMANOVA: 5 Plots are produced; 1 over 4 soils, as an inset in the 3 soil plot; 1 over 3 soils and then 3 plots for each of the infested soils.... Env.fit arrows are added for the the five fungi with the highest r2 with the ordination. PERMANOVA R2 for the factors soi, acc or reslevel are added as well with corresponding p-vals. --> FIGURE 3
 
-```{r do NMDS, warning=FALSE}
+```{r do NMDS, echo=FALSE, warning=FALSE}
 # 1. The 4 soils NMDS Plot without legend -> This willgive a little inset graphic in the big graphic
 # prep "Adf", you only want the scores, no factors
 Adf4 <- Topf18.COMBO.NS.NONA.xxx[, c(10:19)]
@@ -545,12 +686,13 @@ g3 <- ggplot(nmds.plot3, aes(nmds3.1, nmds3.2)) +
   annotate("text", x=0.155, y=-0.335, label= "F. oxy.", fontface = 'italic',  angle = 0, alpha=1, size = 2.8) + 
   annotate("text", x=-0.39, y=0.15, label= "A. eut.", fontface = 'italic', angle = 0,      alpha=1, size = 2.8) + 
   annotate("text", x=0.45, y=-0.65, label=paste('Stress =', round(fung.mds3$stress,2)), size=2.5) + # add stress-value to plot
-  annotate("text", x=-0.7, y=0.7, hjust = 0, label= "PERMANOVA:", size = sze) + 
-  annotate("text", x=-0.7, y=0.65, hjust = 0,  label= "~ soil  0.41***", size = sze) +  # PERMANOVA results
-  annotate("text", x=-0.7, y=0.6, hjust = 0,  label= "~ soil*acc  0.15***", size = sze) +  
-  annotate("text", x=-0.7, y=0.55, hjust = 0, label= "~ acc  0.14***", size = sze) + 
-  annotate("text", x=-0.7, y=0.5, hjust = 0, label= "~ reslevel  0.1***", size = sze) +  
-  annotate("text", x=-0.7, y=0.45, hjust = 0,  label= "~ soil*reslevel  0.07***", size = sze)+
+  annotate("text", x=-0.7, y=0.7, hjust = 0, label= "PERMANOVA", size = sze) + 
+  annotate("text", x=-0.7, y=0.65, hjust = 0,  label= "A: soil  .41***", size = sze) +  # PERMANOVA results
+  annotate("text", x=-0.7, y=0.6, hjust = 0,  label= "     soil*genotype  .15***", size = sze) +  
+  annotate("text", x=-0.7, y=0.55, hjust = 0, label= "     genotype  .14***", size = sze) +
+  annotate("text", x=-0.7, y=0.48, hjust = 0,  label= "B: soil  .41***", size = sze) +
+  annotate("text", x=-0.7, y=0.43, hjust = 0, label= "     res. level  .1***", size = sze) +  
+  annotate("text", x=-0.7, y=0.38, hjust = 0,  label= "     soil*res. level  .07***", size = sze)+
   theme_bw() +
   theme(legend.position = c(0.15,0.2),
         legend.title = element_blank(),
@@ -607,9 +749,9 @@ gH <- ggplot(nmds.plotH, aes(nmdsH.1, nmdsH.2)) +
   annotate("text", x=0.6, y=0.02, label= "F. sol.", fontface = 'italic',  angle = 0, alpha=1, size = 2.8) + 
   annotate("text", x=-0.56, y=-0.41, label= "AMF",                          angle = 0,    alpha=1, size = 2.8) +
   annotate("text", x=0.47, y=-0.088, label= "C. ros.", fontface = 'italic', angle = 0,      alpha=1, size = 2.8) + 
-  annotate("text", x=-0.7, y=0.7, hjust = 0, label= "PERMANOVA:", size = sze) + 
-  annotate("text", x=-0.7, y=0.65, hjust = 0, label= "~ acc  0.59***", size = sze) + 
-  annotate("text", x=-0.7, y=0.6, hjust = 0, label= "~ reslevel  0.39***", size = sze) +  
+  annotate("text", x=-0.7, y=0.7, hjust = 0, label= "PERMANOVA", size = sze) + 
+  annotate("text", x=-0.7, y=0.65, hjust = 0, label= "A: genotype  .59***", size = sze) + 
+  annotate("text", x=-0.7, y=0.58, hjust = 0, label= "B: res. level  .39***", size = sze) +  
   annotate("text", x=0.45, y=-0.65, label=paste('Stress =', round(fung.mdsH$stress,2)), size=2.5) +
   ggtitle("Kirchlindach") +
   theme_bw() +
@@ -670,9 +812,9 @@ gL <- ggplot(nmds.plotL, aes(nmdsL.1, nmdsL.2)) +
   annotate("text", x=-0.65, y=-0.04, label= "F sol.", fontface = 'italic', alpha=1, size = 2.8) + 
   annotate("text", x=0.1, y=-0.6, label= "P. ult.", fontface = 'italic', alpha=1, size = 2.8) + 
   annotate("text", x=0.68, y=-0.29, label= "AMF",   alpha=1, size = 2.8) + # add Fungi names manually
-  annotate("text", x=-0.7, y=0.7, hjust = 0, label= "PERMANOVA:", size = sze) + 
-  annotate("text", x=-0.7, y=0.65, hjust = 0, label= "~ acc  0.46**", size = sze) + 
-  annotate("text", x=-0.7, y=0.6, hjust = 0, label= "~ reslevel  0.21**", size = sze) +  
+  annotate("text", x=-0.7, y=0.7, hjust = 0, label= "PERMANOVA", size = sze) + 
+  annotate("text", x=-0.7, y=0.65, hjust = 0, label= "A: genotype  .46**", size = sze) + 
+  annotate("text", x=-0.7, y=0.58, hjust = 0, label= "B: res. level  .21**", size = sze) +  
   annotate("text", x=0.45, y=-0.65, label=paste('Stress =', round(fung.mdsL$stress,2)), size=2.5) +
   ggtitle("Puch") +
   theme_bw() +
@@ -734,9 +876,9 @@ gW <- ggplot(nmds.plotW, aes(nmdsW.1, nmdsW.2)) +
  annotate("text", x=0.38, y=-0.4, label= "F. redo.", fontface = 'italic', alpha=1, size = 2.8) +
  annotate("text", x=0.16, y=-0.39, label= "F. sol.", fontface = 'italic', alpha=1, size = 2.8) + 
  annotate("text", x=0.33, y=-0.25, label= "C. ros.", fontface = 'italic', alpha=1, size = 2.8) + 
- annotate("text", x=-0.7, y=0.7, hjust = 0, label= "PERMANOVA:", size = sze) + 
- annotate("text", x=-0.7, y=0.65, hjust = 0, label= "~ acc  0.33*", size = sze) + 
- annotate("text", x=-0.7, y=0.6, hjust = 0, label= "~ reslevel  0.18**", size = sze) +  
+ annotate("text", x=-0.7, y=0.7, hjust = 0, label= "PERMANOVA", size = sze) + 
+ annotate("text", x=-0.7, y=0.65, hjust = 0, label= "A: genotype  .33*", size = sze) + 
+ annotate("text", x=-0.7, y=0.58, hjust = 0, label= "B: res. level  .18**", size = sze) +  
  annotate("text", x=0.45, y=-0.65, label=paste('Stress =', round(fung.mdsW$stress,2)), size=2.5) +
  ggtitle("Neu-Eichenberg") +
  theme_bw() +
@@ -762,16 +904,23 @@ thelegendsoils <- ggpubr::get_legend(g4 + theme(legend.margin = margin(0, 0, 0, 
 thelegendAccs <- ggpubr::get_legend(gH + theme(legend.margin = margin(0, 0, 0, 0)) + guides(lty=FALSE)) # extract the legend for the accs from one of the plots
 thelegendRes <- ggpubr::get_legend(gH + theme(legend.margin = margin(0, 0, 0, 0)) +
                                      guides(shape=FALSE, lty = guide_legend(override.aes = list(color ="black"))))
-legendS <- ggpubr::ggarrange(thelegendsoils, thelegendAccs, thelegendRes) # 
 
-# B: produce the 4 soils inlet in the 3 soils plot
+# B: produce the 4 soils inset in the 3 soils plot
 g4_grob <- ggplotGrob(g4 + theme(legend.position = "none"))
 g3plus <- g3 + annotation_custom(grob = g4_grob, xmin = 0.3, xmax = 0.75, ymin = 0.3, ymax = 0.75)
 
-# C: arrange the 4 plots
+
+# C: put soil and genoytpe legends in g3plus
+g3plusplus <- g3plus + theme(legend.position="none") + annotation_custom(grob = thelegendsoils, xmin = -0.80, xmax = -0.5, ymin = -0.2, ymax = 0)
+g3plusplusplus <- g3plusplus + annotation_custom(grob = thelegendAccs, xmin = -0.75, xmax = -0.5, ymin = -0.67, ymax = -0.27)
+
+# D: put reslevel legend in gH
+gHplus <- gH + theme(legend.position="none") + theme(axis.text = element_blank()) + annotation_custom(grob = thelegendRes, xmin = -0.7, xmax = -0.35, ymin = -0.75, ymax = -0.6)
+
+# E: arrange the 4 plots
 wow <- cowplot::plot_grid(
-  g3plus + theme(legend.position="none") + theme(axis.text.x = element_blank(), axis.title = element_text(size=8)),
-  gH + theme(legend.position="none") + theme(axis.text = element_blank()),
+  g3plusplusplus + theme(axis.text.x = element_blank(), axis.title = element_text(size=8)),
+  gHplus,
   gL + theme(legend.position="none") + theme(axis.title = element_text(size=8)),
   gW + theme(legend.position="none") + theme(axis.text.y = element_blank(), axis.title = element_text(size=8)),
   nrow = 2,
@@ -779,10 +928,9 @@ wow <- cowplot::plot_grid(
 
 wow
 
-# D: save that beautiful plot & the legend!
-#ggsave("4plus.tiff", wow, units="cm", width=18, height=18, dpi=300, compression = 'lzw')   # 159mm breit ist standard Word doc. 190mm breit ist Frontiers in Plant Sci.
-#ggsave("4plusLEGEND.tiff", legendS, units="cm", width=6, height=6, dpi=300, compression = 'lzw')
-
+# D: save that beautiful plot
+#ggsave("4plus.eps", wow, units="cm", width=18, height=18, dpi=600)   # 180mm is full width for NewPhyt
+#ggsave("4plus.png", wow, units="cm", width=18, height=18, dpi=200)   # png
 
 #rm(Adf4, Adf3, AdfH, AdfL, AdfW, arrow3, arrowH, arrowL, arrowW, fit3, fitH, fitL, fitW, fung.mds3, fung.mdsH, fung.mds4, fung.mdsL, fung.mdsW, fung.dist3, fung.distH, fung.distL, fung.distW, nmds.plot4, nmds.plot3, nmds.plotH, nmds.plotL, nmds.plotW, fung.dist3, fung.distH,fung.distL, fung.distW, nmds4.1, nmds4.2, nmds3.1, nmds3.2, nmdsH.1, nmdsH.2, nmdsL.1, nmdsL.2, nmdsW.1, nmdsW.2, g4, g4_grob, g3, g3plus, gH, gL, gW)
 ```
@@ -793,7 +941,7 @@ wow
 1) I backward select the variables (fungi) from a full model containing all fungi, without factors soil or acc. At each step I exlude the variable with the highest p-value. I set k=5 manually, in order to avoid too much wiggeliness. 
 
 
-```{r GAM 100noacc}
+```{r GAM 100noacc, echo=FALSE}
 
 d3ta <- Topf18.COMBO.NS %>% filter (soil!="F")
 
@@ -823,7 +971,7 @@ AIC(modelxxx)
 ```
 -> Pult rausnehmen:
 
-```{r GAM 99noacc1}
+```{r GAM 99noacc1, echo=FALSE}
 modGAM_99 <- gam(s.dw.ratioSNS ~ 
                                   s(Apha, bs="cs", k=5) +
                                   s(Fsol, bs="cs", k=5) +
@@ -850,7 +998,7 @@ AIC(modelxxx)
 
 -> Phoma rausnehmen:
 
-```{r GAM 99noacc}
+```{r GAM 99noacc, echo=FALSE}
 modGAM_98 <- gam(s.dw.ratioSNS ~ 
                                   s(Apha, bs="cs", k=5) +
                                   s(Fsol, bs="cs", k=5) +
@@ -877,7 +1025,7 @@ AIC(modelxxx)
 
 -> Phoma rausnehmen:
 
-```{r GAM 98noacc}
+```{r GAM 98noacc, echo=FALSE}
 modGAM_98 <- gam(s.dw.ratioSNS ~ 
                                   s(Apha, bs="cs", k=5) +
                                   s(Fsol, bs="cs", k=5) +
@@ -905,7 +1053,7 @@ AIC(modelxxx)
 -> take Foxy out: 
 
 
-```{r GAM 97noacc}
+```{r GAM 97noacc, echo=FALSE}
 modGAM_97 <- gam(s.dw.ratioSNS ~ 
                                   s(Apha, bs="cs", k=5) +
                                   s(Fsol, bs="cs", k=5) +
@@ -932,7 +1080,7 @@ AIC(modelxxx)
 
 -> take Fave out:
 
-```{r GAM 96noacc}
+```{r GAM 96noacc, echo=FALSE}
 modGAM_96 <- gam(s.dw.ratioSNS ~ 
                                   s(Apha, bs="cs", k=5) +
                                   s(Fsol, bs="cs", k=5) +
@@ -958,7 +1106,7 @@ AIC(modelxxx)
 ```
 -> finally, Apha is eliminated from the model:
 
-```{r GAM 95noacc}
+```{r GAM 95noacc, echo=FALSE}
 modGAM_95 <- gam(s.dw.ratioSNS ~ 
                                   #s(Apha, bs="cs", k=5) +
                                   s(Fsol, bs="cs", k=5) +
@@ -989,7 +1137,7 @@ Now, claculate adj.R2 for each of the retained variables:
 -> I will use these values to display them in the plots further down.
 
 
-```{r GAM mod 95noacc factors contributions}
+```{r GAM mod 95noacc factors contributions, echo=FALSE}
 
 R2_Fsol <- unlist(summary(modGAM_95)[c(10,14)]) - 
           unlist(summary(gam(s.dw.ratioSNS ~  #s(Fsol, bs="cs", k=5) +
@@ -1019,9 +1167,9 @@ sum(R2s$r.sq)
 
 #### Now, we redo the same procedure for each of the three infested soils individually:
 
-```{r GAM soil H 100}
+```{r GAM soil H 100, echo=FALSE}
 modGAM_H_100 <- gam(s.dw.ratioSNS ~ 
-                                  3s(Apha, bs="cs", k=5) +
+                                  #s(Apha, bs="cs", k=5) +
                                   s(Fsol, bs="cs", k=5)  +
                                   #s(Fave, bs="cs", k=5) +
                                   #s(Fredo, bs="cs", k=5) +
@@ -1059,7 +1207,7 @@ sum(R2s$r.sq)
 ```
 In H only Fsol and Cros are retained.
 
-```{r GAM soil L 100}
+```{r GAM soil L 100, echo=FALSE}
 modGAM_L_100 <- gam(s.dw.ratioSNS ~ 
                                   #s(Apha, bs="cs", k=5) +
                                   s(Fsol, bs="cs", k=5)  +
@@ -1103,7 +1251,7 @@ sum(R2s$r.sq)
 In L soil Fsol & AMF are retained.  
 Foxy has a sign. smooth term but produces considerable concurvity when in the Model.
 
-```{r GAM soil W 100}
+```{r GAM soil W 100, echo=FALSE}
 modGAM_W_100 <- gam(s.dw.ratioSNS ~ 
                                   #s(Apha, bs="cs", k=5) +
                                   s(Fsol, bs="cs", k=5)  +
@@ -1149,9 +1297,9 @@ sum(R2s$r.sq)
 In W Fsol, Rsol & AMF are retained.
 
 
-#### Plot the GAM plots on the original scale of the respons variable
+#### Plot the GAM plots on the original scale of the respons variable --> FIGURE 5
 
-```{r  gam plot on original scale, warning=FALSE}
+```{r  gam plot on original scale, warning=FALSE, echo=FALSE}
 #setup
 si <- 4
 sz <- 3
@@ -1162,8 +1310,8 @@ axtk <- 6
 gp_3_Fsol <- tidymv::plot_smooths(model = modGAM_95, series = Fsol) +
   theme_bw() +
   geom_point(data=d3ta, aes(x=Fsol, y=s.dw.ratioSNS, color=soil), size=2) +
-  annotate("text", x=1600, y=1.25, label= expression(italic("F. solani")), size = si) +
-  annotate("text", x=1600, y=1.1, label= expression(paste(italic(r^2), "= 0.07")) , size = sz) +
+  annotate("text", x=1600, y=1.25, label= "italic(F.~solani)", parse=TRUE, size = si) +
+  annotate("text", x=1600, y=1.1, label= "italic(r^2)==0.07", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[2:4]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
     labs(y=expression(SDW[italic(Rel.)]), x="DNA amount") +
@@ -1176,8 +1324,8 @@ gp_3_Fsol <- tidymv::plot_smooths(model = modGAM_95, series = Fsol) +
 gp_3_Fredo <- tidymv::plot_smooths(model = modGAM_95, series = Fredo) +
   theme_bw() +
   geom_point(data=d3ta, aes(x=Fredo, y=s.dw.ratioSNS, color=soil), size=2) +
-  annotate("text", x=15, y=1.25, label= expression(italic("F. redolens")), size = si) +
-  annotate("text", x=1500, y=1.1, label= expression(paste(italic(r^2), "= 0.05")), size = sz) +
+  annotate("text", x=15, y=1.25, label= "italic(F.~redolens)", parse=TRUE, size = si) +
+  annotate("text", x=15, y=1.1, label= "italic(r^2)==0.05", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[2:4])+
   scale_y_continuous(breaks = c(0.5, 1)) +
   labs(y=expression(SDW[italic(Rel.)])) +
@@ -1191,8 +1339,8 @@ gp_3_Fredo <- tidymv::plot_smooths(model = modGAM_95, series = Fredo) +
 gp_3_Rsol <- tidymv::plot_smooths(model = modGAM_95, series = Rsol) +
   theme_bw() +
   geom_point(data=d3ta, aes(x=Rsol, y=s.dw.ratioSNS, color=soil),  size=2) +
-  annotate("text", x=150, y=1.25, label= expression(italic("R. solani")),  size = si) +
-  annotate("text", x=150, y=1.1, label= expression(paste(italic(r^2), "= 0.04")), size = sz) +
+  annotate("text", x=150, y=1.25, label= "italic(R.~solani)", parse=TRUE, size = si) +
+  annotate("text", x=150, y=1.1, label= "italic(r^2)==0.04", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[2:4])+
   scale_y_continuous(breaks = c(0.5, 1)) +
   labs(y=expression(SDW[italic(Rel.)])) +
@@ -1207,8 +1355,8 @@ gp_3_Cros <- tidymv::plot_smooths(model = modGAM_95, series = Cros) +
   theme_bw() +
   geom_point(data=d3ta, aes(x=Cros, y=s.dw.ratioSNS, color=soil),  size=2) +
   labs(y=expression(SDW[italic(Rel.)])) +
-  annotate("text", x=60, y=1.25, label= expression(italic("C. rosea")), size = si) +
-  annotate("text", x=60, y=1.1, label= expression(paste(italic(r^2), "= 0.04")), size = sz) + 
+  annotate("text", x=60, y=1.25, label= "italic(C.~rosea)", parse=TRUE, size = si) +
+  annotate("text", x=60, y=1.1, label= "italic(r^2)==0.04", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[2:4])+
   scale_y_continuous(breaks = c(0.5, 1)) +
     labs(y=expression(SDW[italic(Rel.)])) +
@@ -1222,8 +1370,8 @@ gp_3_Cros <- tidymv::plot_smooths(model = modGAM_95, series = Cros) +
 gp_3_AMF <- tidymv::plot_smooths(model = modGAM_95, series = AMF) +
   theme_bw() +
   geom_point(data=d3ta, aes(x=AMF, y=s.dw.ratioSNS, color=soil),  size=2) +
-  annotate("text", x=50000, y=1.25, label= expression("AMF"), size = si) +
-  annotate("text", x=50000, y=0.25, label= expression(paste(italic(r^2), "= 0.05")) , size = sz) +
+  annotate("text", x=50000, y=1.25, label= "AMF", parse=TRUE, size = si) +
+  annotate("text", x=50000, y=0.25, label= "italic(r^2)==0.05", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[2:4])+
   scale_y_continuous(breaks = c(0.5, 1)) +
     labs(y=expression(SDW[italic(Rel.)])) +
@@ -1237,15 +1385,15 @@ gp_3_AMF <- tidymv::plot_smooths(model = modGAM_95, series = AMF) +
 # H soil
 gp_H_FAKE_AMF <- ggplot(data=d3ta[d3ta$soil=="H",], aes(x=AMF, y=s.dw.ratioSNS)) + 
   theme_bw() +
-  geom_point(aes(color=soil), size=2, alpha=0.6) +
-  annotate("text", x=20000, y=1.25, label= expression("AMF"),  size = si, color="grey60") +
+  geom_point(aes(color=soil), size=2, alpha=0.4) +
+  annotate("text", x=20000, y=1.25, label= "AMF", parse=TRUE, size = si, color="grey40") +
   scale_color_manual(values=Kolor[2]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
   theme(legend.position = "none",
           axis.title=element_blank(),
-          axis.text = element_text(color= "grey60", size=axtk),
-          axis.ticks = element_line(color = "grey60"),
-          panel.border = element_rect(color="grey60"),
+          axis.text = element_text(color= "grey40", size=axtk),
+          axis.ticks = element_line(color = "grey40"),
+          panel.border = element_rect(color="grey40"),
           panel.grid = element_blank()) +
   coord_cartesian(ylim = c(0, 1.3)) # this is only a scatterplot for AMF. AMF is not included in the final model in H soil; but it is in the 3soil GAM model, so I display AMF-SDWrel scatterplot as shaded out version....
 
@@ -1253,8 +1401,8 @@ gp_H_FAKE_AMF <- ggplot(data=d3ta[d3ta$soil=="H",], aes(x=AMF, y=s.dw.ratioSNS))
 gp_H_Cros <- tidymv::plot_smooths(model = modGAM_H_100, series = Cros) +
   theme_bw() +
   geom_point(data=d3ta[d3ta$soil=="H",], aes(x=Cros, y=s.dw.ratioSNS, color=soil), size=2) +
-  annotate("text", x=60, y=1.25, label= expression(italic("C. rosea")), size = si) +
-  annotate("text", x=60, y=1.1, label= expression(paste(italic(r^2), "= 0.12")), size = sz) +
+  annotate("text", x=60, y=1.25, label= "italic(C.~rosea)", parse=TRUE, size = si) +
+  annotate("text", x=60, y=1.1, label= "italic(r^2)==0.12", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[2]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
    theme(legend.position = "none",
@@ -1265,15 +1413,15 @@ gp_H_Cros <- tidymv::plot_smooths(model = modGAM_H_100, series = Cros) +
 
 gp_H_FAKE_Rsol <- ggplot(data=d3ta[d3ta$soil=="H",], aes(x=Rsol, y=s.dw.ratioSNS)) +   # this is again just a scatterplot.
   theme_bw() +
-  geom_point(aes(color=soil), size=2, alpha=0.6) +
-  annotate("text", x=40, y=1.25, label= expression(italic("R. solani")), size = si, color="grey60") +
+  geom_point(aes(color=soil), size=2, alpha=0.4) +
+  annotate("text", x=40, y=1.25, label= "italic(R.~solani)", parse=TRUE, size = si, color="grey40") +
   scale_color_manual(values=Kolor[2]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
   theme(legend.position = "none",
           axis.title=element_blank(),
-          axis.text = element_text(color= "grey60", size=axtk),
-          axis.ticks = element_line(color = "grey60"),
-          panel.border = element_rect(color="grey60"),
+          axis.text = element_text(color= "grey40", size=axtk),
+          axis.ticks = element_line(color = "grey40"),
+          panel.border = element_rect(color="grey40"),
           panel.grid = element_blank()) +
   coord_cartesian(ylim = c(0, 1.3)) 
 
@@ -1282,8 +1430,8 @@ gp_H_Fsol <- tidymv::plot_smooths(model = modGAM_H_100, series = Fsol) +
   geom_point(data=d3ta[d3ta$soil=="H",], aes(x=Fsol, y=s.dw.ratioSNS, color=soil), size=2) +
   labs(y=expression(SDW[italic(Rel.)]),
        x=expression(paste("pg ", rct^-1))) +
-  annotate("text", x=1250, y=1.25, label= expression(italic("F. solani")), size = si) +
-  annotate("text", x=1250, y=1.1, label= expression(paste(italic(r^2), "= 0.29")) , size = sz) +
+  annotate("text", x=1250, y=1.25, label= "italic(F.~solani)", parse=TRUE, size = si) +
+  annotate("text", x=1250, y=1.1, label= "italic(r^2)==0.29", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[2]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
   labs(x=expression("DNA amount")) +
@@ -1298,8 +1446,8 @@ gp_H_Fsol <- tidymv::plot_smooths(model = modGAM_H_100, series = Fsol) +
 gp_L_AMF <- tidymv::plot_smooths(model = modGAM_L_100, series = AMF) +
   theme_bw() +
   geom_point(data=d3ta[d3ta$soil=="L",], aes(x=AMF, y=s.dw.ratioSNS, color=soil), size=2) +
-  annotate("text", x=5000, y=1.25, label= expression("AMF"),  size = si) +
-  annotate("text", x=5000, y=1.1, label= expression(paste(italic(r^2), "= 0.15")), size = sz) +
+  annotate("text", x=5000, y=1.25, label= "AMF", parse=TRUE, size = si) +
+  annotate("text", x=5000, y=1.1, label= "italic(r^2)==0.15", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[3]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
   theme(legend.position = "none",
@@ -1310,37 +1458,37 @@ gp_L_AMF <- tidymv::plot_smooths(model = modGAM_L_100, series = AMF) +
 
 gp_L_FAKE_Cros <- ggplot(data=d3ta[d3ta$soil=="L",], aes(x=Cros, y=s.dw.ratioSNS)) +   # this is again just a scatterplot.
   theme_bw() +
-  geom_point(aes(color=soil), size=2, alpha=0.6) +
-  annotate("text", x=25, y=1.25, label= expression(italic("C. rosea")), size = si, color="grey60") +
+  geom_point(aes(color=soil), size=2, alpha=0.4) +
+  annotate("text", x=25, y=1.25, label= "italic(C.~rosea)", parse=TRUE, size = si, color="grey40") +
   scale_color_manual(values=Kolor[3]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
   theme(legend.position = "none",
           axis.title=element_blank(),
-          axis.text = element_text(color= "grey60", size=axtk),
-          axis.ticks = element_line(color = "grey60"),
-          panel.border = element_rect(color="grey60"),
+          axis.text = element_text(color= "grey40", size=axtk),
+          axis.ticks = element_line(color = "grey40"),
+          panel.border = element_rect(color="grey40"),
           panel.grid = element_blank()) +
   coord_cartesian(ylim = c(0, 1.3))
 
 gp_L_FAKE_Rsol <- ggplot(data=d3ta[d3ta$soil=="L",], aes(x=Rsol, y=s.dw.ratioSNS)) +   # this is again just a scatterplot.
   theme_bw() +
   geom_point(aes(color=soil), size=2, alpha=0.6) +
-  annotate("text", x=100, y=1.25, label= expression(italic("R. solani")), size = si, color="grey60") +
+  annotate("text", x=100, y=1.25, label= "italic(R.~solani)", parse=TRUE, size = si, color="grey40")+
   scale_color_manual(values=Kolor[3]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
   theme(legend.position = "none",
           axis.title=element_blank(),
-          axis.text = element_text(color= "grey60", size=axtk),
-          axis.ticks = element_line(color = "grey60"),
-          panel.border = element_rect(color="grey60"),
+          axis.text = element_text(color= "grey40", size=axtk),
+          axis.ticks = element_line(color = "grey40"),
+          panel.border = element_rect(color="grey40"),
           panel.grid = element_blank()) +
   coord_cartesian(ylim = c(0, 1.3)) 
 
 gp_L_Fsol <- tidymv::plot_smooths(model = modGAM_L_100, series = Fsol) +
   theme_bw() +
   geom_point(data=d3ta[d3ta$soil=="L",], aes(x=Fsol, y=s.dw.ratioSNS, color=soil), size=2) +
-  annotate("text", x=1500, y=1.25, label= expression(italic("F. solani")),  size = si) +
-  annotate("text", x=1500, y=1.1, label= expression(paste(italic(r^2), "= 0.17")), size = sz) +
+  annotate("text", x=1500, y=1.25, label= "italic(F.~solani)", parse=TRUE, size = si) +
+  annotate("text", x=1500, y=1.1, label= "italic(r^2)==0.17", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[3]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
   labs(x=expression("DNA amount")) +
@@ -1355,8 +1503,8 @@ gp_L_Fsol <- tidymv::plot_smooths(model = modGAM_L_100, series = Fsol) +
 gp_W_AMF <- tidymv::plot_smooths(model = modGAM_W_100, series = AMF) +
   theme_bw() +
   geom_point(data=d3ta[d3ta$soil=="W",], aes(x=AMF, y=s.dw.ratioSNS, color=soil), size=2) +
-  annotate("text", x=50000, y=1.25, label= expression("AMF"),  size = si) +
-  annotate("text", x=50000, y=0.25, label= expression(paste(italic(r^2), "= 0.29")), size = sz) +
+  annotate("text", x=50000, y=1.25, label= "AMF", parse=TRUE, size = si) +
+  annotate("text", x=50000, y=0.25, label= "italic(r^2)==0.29", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[4]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
   theme(legend.position = "none",
@@ -1367,23 +1515,23 @@ gp_W_AMF <- tidymv::plot_smooths(model = modGAM_W_100, series = AMF) +
 
 gp_W_FAKE_Cros <- ggplot(data=d3ta[d3ta$soil=="W",], aes(x=Cros, y=s.dw.ratioSNS)) +   # this is again just a scatterplot.
   theme_bw() +
-  geom_point(aes(color=soil), size=2, alpha=0.6) +
-  annotate("text", x=15, y=1.25, label= expression(italic("C. rosea")), size = si, color="grey60") +
+  geom_point(aes(color=soil), size=2, alpha=0.4) +
+  annotate("text", x=15, y=1.25, label= "italic(C.~rosea)", parse=TRUE, size = si, color="grey40") +
   scale_color_manual(values=Kolor[4]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
   theme(legend.position = "none",
           axis.title=element_blank(),
-          axis.text = element_text(color= "grey60", size=axtk),
-          axis.ticks = element_line(color = "grey60"),
-          panel.border = element_rect(color="grey60"),
+          axis.text = element_text(color= "grey40", size=axtk),
+          axis.ticks = element_line(color = "grey40"),
+          panel.border = element_rect(color="grey40"),
           panel.grid = element_blank()) +
   coord_cartesian(ylim = c(0, 1.3))
 
 gp_W_Rsol <- tidymv::plot_smooths(model = modGAM_W_100, series = Rsol) +
   theme_bw() +
   geom_point(data=d3ta[d3ta$soil=="W",], aes(x=Rsol, y=s.dw.ratioSNS, color=soil), size=2) +
-  annotate("text", x=150, y=1.25, label= expression(italic("R. solani")), size = si) +
-  annotate("text", x=150, y=1.1, label= expression(paste(italic(r^2), "= 0.18")), size = sz) +
+  annotate("text", x=150, y=1.25, label= "italic(R.~solani)", parse=TRUE, size = si) +
+  annotate("text", x=150, y=1.1, label= "italic(r^2)==0.18", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[4]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
   theme(legend.position = "none",
@@ -1395,8 +1543,8 @@ gp_W_Rsol <- tidymv::plot_smooths(model = modGAM_W_100, series = Rsol) +
 gp_W_Fsol <- tidymv::plot_smooths(model = modGAM_W_100, series = Fsol) +
   theme_bw() +
   geom_point(data=d3ta[d3ta$soil=="W",], aes(x=Fsol, y=s.dw.ratioSNS, color=soil), size=2) +
-  annotate("text", x=750, y=1.25, label= expression(italic("F. solani")), size = si) +
-  annotate("text", x=750, y=0.25, label= expression(paste(italic(r^2), "= 0.16")), size = sz) +
+  annotate("text", x=750, y=1.25, label= "italic(F.~solani)", parse=TRUE, size = si) +
+  annotate("text", x=750, y=0.25, label= "italic(r^2)==0.16", parse=TRUE, size = sz) +
   scale_color_manual(values=Kolor[4]) +
   scale_y_continuous(breaks = c(0.5, 1)) +
   theme(legend.position = "none",
@@ -1413,7 +1561,7 @@ gp_W_Fsol <- tidymv::plot_smooths(model = modGAM_W_100, series = Fsol) +
 ### Titles
 szo <- 4
 
-title_3 <- ggplot(mtcars, aes(wt, mpg)) +
+title_3 <- ggplot(mtcars, aes(wt, mpg)) + # I use mtcars just to initiate the plot...
   annotate("text", x=2, y=2,  hjust = 0, label= "3 infested soils", size = szo) +
   theme_void() +
   xlim(0,11) +
@@ -1462,18 +1610,249 @@ bigplot <- plot_grid(gp_3_AMF,  gp_H_FAKE_AMF,  gp_L_AMF,       gp_W_AMF,
 bibigplot <- plot_grid(titles, bigplot, ncol = 1, rel_heights = c(1,10))
 
 
-ggsave("GAMplots_3HLW_r2.tiff", bibigplot, units="cm", width=18, height=18, dpi=300, device = "tiff")
-  
+#ggsave("GAMplots_3HLW_r2.tiff", bibigplot, units="cm", width=18, height=18, dpi=600, compression="lzw")
+#ggsave("GAMplots_3HLW_r2.png", bibigplot, units="cm", width=18, height=18, dpi=200)  #png
+```
+
+## Phenotype and 10 fungi vs res/susceptible level --> FIGURE S3
+
+```{r supp fig RvsS, echo=FALSE}
+Tdfred <- Topf18.COMBO.NS[,c(3,4,5,8:19)]
+
+TdfrM <- melt(Tdfred, id.vars=c("acc","soil", "reslevel"))
+TdfrM$acc <- factor(TdfrM$acc, c("S91", "S134", "G78", "C1", "S64", "G89", "S22", "C2"))
+
+tits <- c("RRI", "SDWrel.", "A. eut.", "F. ave.", "F. oxy.", "F. redo.", "F. sol.", "D. pin.", "P. ult.", "R. sol.", "AMF", "C. ros.")
+names(tits) <- c("r.aspectMEDIAN", "s.dw.ratioSNS", "Apha", "Fave", "Foxy", "Fredo", "Fsol", "Phoma", "Pult", "Rsol", "AMF", "Cros")
+
+
+g2plus10 <- TdfrM %>% filter (soil!="F") %>%
+ggplot() +
+  geom_boxplot(aes(x = reslevel, y = value), color="gray77", outlier.size = 0.1) +
+  geom_jitter(aes(x = reslevel, y = value, color=soil, shape=acc), width = 0.2) +
+  facet_wrap(~variable, scales = "free", labeller = labeller(variable=tits)) +
+  scale_color_manual(values = Kolor[2:4], labels = soil_nms[2:4]) +
+  scale_shape_manual(values = c(19, 15, 18, 17, 20, 2, 1, 0)) +
+  scale_x_discrete(expand = c(0, 0)) +
+  ggpubr::stat_compare_means(aes(x = reslevel, y = value), label = "p.signif", method = "wilcox.test",
+                             symnum.args = list(cutpoints = c(0, 0.0001, 0.001, 0.01, 0.05, 1), symbols = c("****", "***", "**", "*", "ns")),
+                             label.x = 1.5, label.y = Inf, vjust=2, hjust=0.5, size=3) +
+  labs(color="Soil", shape="Genotype") +
+  theme_bw() +
+  theme(panel.grid = element_blank())
+
+g2plus10
+
+#ggsave("2plus10fungiplot.eps", g2plus10, units="cm", width=18, height=14, dpi=600)    # I save only once.
+#ggsave("2plus10fungiplot.png", g2plus10, units="cm", width=18, height=14, dpi=200)    # png
+```
+
+## Spearman between Phenotype and fungi --> FIGURE S4
+
+```{r suppSpearman, echo=FALSE}
+# Part I: Prep data
+# A) Corrs in H
+
+# a) Prep data rhos
+rhos_Mat_H <- round(Hmisc::rcorr(as.matrix(Topf18.COMBO.NS[Topf18.COMBO.NS$soil=="H", c(5,8:19)][-1]), type="spearman")$r,2)
+diag(rhos_Mat_H) <- NA
+rhos_Mat_H[upper.tri(rhos_Mat_H)] <- NA # again only upper triangle of the correlation matrix
+melted_rhos_Mat_H <- melt(rhos_Mat_H[3:12,1:2], na.rm = TRUE)  # get only the corrs betwenn the 10 fungi and the two phenos (not phenopheno nor fungifungi)
+melted_rhos_Mat_H$Var2 <- dplyr::recode(melted_rhos_Mat_H$Var2, 's.dw.ratioSNS'='s.dw.ratioSNS_H', "r.aspectMEDIAN" = "r.aspectMEDIAN_H")
+
+# b) pvalue matrix
+pvals_Mat_H <- round(Hmisc::rcorr(as.matrix(Topf18.COMBO.NS[Topf18.COMBO.NS$soil=="H", c(5,8:19)][-1]), type="spearman")$P,2)
+diag(pvals_Mat_H) <- NA
+pvals_Mat_H[upper.tri(pvals_Mat_H)] <- NA # again only upper triangle of the correlation matrix
+melted_pvals_Mat_H <- melt(pvals_Mat_H[3:12,1:2], na.rm = TRUE)  # get only the corrs betwenn the 10 fungi and the two phenos (not phenopheno nor fungifungi)
+melted_pvals_Mat_H$Var2 <- dplyr::recode(melted_pvals_Mat_H$Var2, 's.dw.ratioSNS'='s.dw.ratioSNS_H', "r.aspectMEDIAN" = "r.aspectMEDIAN_H")
+melted_pvals_Mat_H$signif <- as.numeric(melted_pvals_Mat_H$value <= 0.05)   # sets 1 for significant; 0 for non-significant (at p = 0.05)
+melted_pvals_Mat_H[melted_pvals_Mat_H$Var1=="Fredo",]$signif <- 0   # Fredo manuell rausschmeissen, weil der hat nur ein Wert!!
+
+# c) further prep: bring rhos and pvals together and manipulate that only significant corrs are shown :)
+corrinfo_H <- melted_rhos_Mat_H
+corrinfo_H$pvals <- melted_pvals_Mat_H$value   # add significance info
+corrinfo_H$signif <- melted_pvals_Mat_H$signif
+corrinfo_H$value <- corrinfo_H$value * corrinfo_H$signif   # set insignificant ones to 0, and...
+corrinfo_H$value <- ifelse(corrinfo_H$value == 0, NA, corrinfo_H$value)  # ... set them to NA
+
+
+# B) Corrs in L
+
+# a) Prep data rhos
+rhos_Mat_L <- round(Hmisc::rcorr(as.matrix(Topf18.COMBO.NS[Topf18.COMBO.NS$soil=="L", c(5,8:19)][-1]), type="spearman")$r,2)
+diag(rhos_Mat_L) <- NA
+rhos_Mat_L[upper.tri(rhos_Mat_L)] <- NA # again only upper triangle of the correlation matrix
+melted_rhos_Mat_L <- melt(rhos_Mat_L[3:12,1:2], na.rm = TRUE)  # get only the corrs betwenn the 10 fungi and the two phenos (not phenopheno nor fungifungi)
+melted_rhos_Mat_L$Var2 <- dplyr::recode(melted_rhos_Mat_L$Var2, 's.dw.ratioSNS'='s.dw.ratioSNS_L', "r.aspectMEDIAN" = "r.aspectMEDIAN_L")
+
+
+# b) pvalue matrix
+pvals_Mat_L <- round(Hmisc::rcorr(as.matrix(Topf18.COMBO.NS[Topf18.COMBO.NS$soil=="L", c(5,8:19)][-1]), type="spearman")$P,2)
+diag(pvals_Mat_L) <- NA
+pvals_Mat_L[upper.tri(pvals_Mat_L)] <- NA # again only upper triangle of the correlation matrix
+melted_pvals_Mat_L <- melt(pvals_Mat_L[3:12,1:2], na.rm = TRUE)  # get only the corrs betwenn the 10 fungi and the two phenos (not phenopheno nor fungifungi)
+melted_pvals_Mat_L$Var2 <- dplyr::recode(melted_pvals_Mat_L$Var2, 's.dw.ratioSNS'='s.dw.ratioSNS_H', "r.aspectMEDIAN" = "r.aspectMEDIAN_H")
+melted_pvals_Mat_L$signif <- as.numeric(melted_pvals_Mat_L$value <= 0.05)   # sets 1 for significant; 0 for non-significant (at p = 0.05)
+
+
+# c) further prep: bring rhos and pvals together and manipulate that only significant corrs are shown :)
+corrinfo_L <- melted_rhos_Mat_L
+corrinfo_L$pvals <- melted_pvals_Mat_L$value   # add significance info
+corrinfo_L$signif <- melted_pvals_Mat_L$signif
+corrinfo_L$value <- corrinfo_L$value * corrinfo_L$signif   # set insignificant ones to 0, and...
+corrinfo_L$value <- ifelse(corrinfo_L$value == 0, NA, corrinfo_L$value)  # ... set them to NA
+
+# C) Corrs in W
+
+# a) Prep data
+rhos_Mat_W <- round(Hmisc::rcorr(as.matrix(Topf18.COMBO.NS[Topf18.COMBO.NS$soil=="W", c(5,8:19)][-1]), type="spearman")$r,2)
+diag(rhos_Mat_W) <- NA
+rhos_Mat_W[upper.tri(rhos_Mat_W)] <- NA # again only upper triangle of the correlation matrix
+melted_rhos_Mat_W <- melt(rhos_Mat_W[3:12,1:2], na.rm = TRUE)  # get only the corrs betwenn the 10 fungi and the two phenos (not phenopheno nor fungifungi)
+melted_rhos_Mat_W$Var2 <- dplyr::recode(melted_rhos_Mat_W$Var2, 's.dw.ratioSNS'='s.dw.ratioSNS_W', "r.aspectMEDIAN" = "r.aspectMEDIAN_W")
+
+
+# b) pvalue matrix
+pvals_Mat_W <- round(Hmisc::rcorr(as.matrix(Topf18.COMBO.NS[Topf18.COMBO.NS$soil=="W", c(5,8:19)][-1]), type="spearman")$P,2)
+diag(pvals_Mat_W) <- NA
+pvals_Mat_W[upper.tri(pvals_Mat_W)] <- NA # again only upper triangle of the correlation matrix
+melted_pvals_Mat_W <- melt(pvals_Mat_W[3:12,1:2], na.rm = TRUE)  # get only the corrs betwenn the 10 fungi and the two phenos (not phenopheno nor fungifungi)
+melted_pvals_Mat_W$Var2 <- dplyr::recode(melted_pvals_Mat_W$Var2, 's.dw.ratioSNS'='s.dw.ratioSNS_H', "r.aspectMEDIAN" = "r.aspectMEDIAN_H")
+melted_pvals_Mat_W$signif <- as.numeric(melted_pvals_Mat_W$value <= 0.05)   # sets 1 for significant; 0 for non-significant (at p = 0.05)
+
+
+# c) further prep: bring rhos and pvals together and manipulate that only significant corrs are shown :)
+corrinfo_W <- melted_rhos_Mat_W
+corrinfo_W$pvals <- melted_pvals_Mat_W$value   # add significance info
+corrinfo_W$signif <- melted_pvals_Mat_W$signif
+corrinfo_W$value <- corrinfo_W$value * corrinfo_W$signif   # set insignificant ones to 0, and...
+corrinfo_W$value <- ifelse(corrinfo_W$value == 0, NA, corrinfo_W$value)  # ... set them to NA
+
+
+### Part II: Plot
+
+xszx <- 6
+yszy <- 6
+vlsz <- 1.8
+ht <- 0.8
+wt <- 0.8
+
+# a) Plot Kirchlindach part
+gcrrH <- ggplot(data = corrinfo_H, aes(Var2, Var1, fill = value)) +
+  geom_tile(color = Kolor[2], height=ht, width=wt) +
+  scale_fill_gradient2(low = "#000033", high = "#FFFF33", mid = "white", na.value = NA,
+                       midpoint = 0, limit = c(-1,1), space = "Lab", breaks = c(-1, 1)) +
+  geom_text(aes(label = numform::f_num(value, zero = 0, digits = 2)), vjust = 0.7, hjust=0.5, size=vlsz) +
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size = yszy),
+        axis.text.x = element_text(angle = 45, vjust = 1, size = xszx, hjust = 1), 
+        axis.title = element_blank(),
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 8),
+        legend.position = "none") +
+  scale_x_discrete(labels = c("RRI", expression("SDW"[italic(Rel.)]))) +
+  scale_y_discrete(limits=c("Rsol","Pult","Phoma","Fsol","Fredo","Foxy","Fave","Cros","Apha","AMF"),
+                    labels= c(expression(paste(italic("R. solani              "), "[3]   ")),
+                            expression(paste(italic("P. ultimum           "), "[2]   ")),
+                            expression(paste(italic("D. pinodella         "), "[2]   ")),
+                            expression(paste(italic("F. solani          "), "[666]   ")),
+                            expression(paste(italic("F. redolens          "), "[0]   ")),
+                            expression(paste(italic("F. oxysporum    "), "[81]   ")),
+                            expression(paste(italic("F. avenaceum     "), "[0]   ")),
+                            expression(paste(italic("C. rosea            "), "[29]   ")),
+                            expression(paste(italic("A.euteiches     "), "[299]   ")),
+                            expression(paste(italic("AMF               "), "[15.4]   ")))) +
+  coord_fixed() +
+  labs(title = "Kirchlindach")
+
+
+# b) Plot Puch part
+gcrrL <- ggplot(data = corrinfo_L, aes(Var2, Var1, fill = value)) +
+  geom_tile(color = Kolor[3], height=ht, width=wt) +
+  scale_fill_gradient2(low = "#000033", high = "#FFFF33", mid = "white", na.value = NA,
+                       midpoint = 0, limit = c(-1,1), space = "Lab") +
+  geom_text(aes(label = numform::f_num(value, zero = 0, digits = 2)), vjust = 0.7, hjust=0.5, size=vlsz) +
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size=yszy),
+        axis.text.x = element_text(angle = 45, vjust = 1, size = xszx, hjust = 1), 
+        axis.title = element_blank(),
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 8),
+        legend.position = "none")+
+  scale_x_discrete(labels = c("RRI", expression("SDW"[italic(Rel.)]))) +
+  scale_y_discrete(limits=c("Rsol","Pult","Phoma","Fsol","Fredo","Foxy","Fave","Cros","Apha","AMF"),
+                   labels= c(expression("[14]   "),
+                             expression("[7]   "),
+                             expression("[6]   "),
+                             expression("[637]   "),
+                             expression("[0]   "),
+                             expression("[22]   "),
+                             expression("[3]   "),
+                             expression("[5]   "),
+                             expression("[609]   "),
+                             expression("[3.1]   ")
+  )) +
+  coord_fixed() +
+  labs(title = "Puch")
+
+
+# c) Plot Witzenhausen part
+gcrrW <- ggplot(data = corrinfo_W, aes(Var2, Var1, fill = value)) +
+  geom_tile(color = Kolor[4], height=ht, width=wt) +
+  scale_fill_gradient2(low = "#000033", high = "#FFFF33", mid = "white", na.value = NA,
+                       midpoint = 0, limit = c(-1,1), space = "Lab", 
+                       name="ρ") +
+  geom_text(aes(label = numform::f_num(value, zero = 0, digits = 2)), vjust = 0.7, hjust=0.5, size=vlsz) +
+  theme_minimal() + 
+  theme(axis.text.y = element_text(size=yszy),
+        axis.text.x = element_text(angle = 45, vjust = 1, size = xszx, hjust = 1), 
+        axis.title = element_blank(),
+        panel.grid.major = element_blank(),
+        plot.title = element_text(size = 8, hjust = 1),
+        legend.position = "none") +
+  scale_x_discrete(labels = c("RRI", expression("SDW"[italic(Rel.)]))) +
+  scale_y_discrete(limits=c("Rsol","Pult","Phoma","Fsol","Fredo","Foxy","Fave","Cros","Apha","AMF"),
+                   labels= c(expression("[64]   "),
+                             expression("[9]   "),
+                             expression("[5]   "),
+                             expression("[254]   "),
+                             expression("[7]   "),
+                             expression("[94]   "),
+                             expression("[0]   "),
+                             expression("[4]   "),
+                             expression("[359]   "),
+                             expression("[41.1]   ")
+  )) +
+  guides(fill = guide_colourbar(barwidth = 0.5, barheight = 3)) +
+coord_fixed() +
+  labs(title = "N.-Eichenberg")
+
+
+
+### plot parts I, II & III together
+megaplot<- ggpubr::ggarrange(gcrrH,
+                             gcrrL,
+                             gcrrW,
+                             nrow = 1,
+                             widths = c(1.24,0.75,0.77))   #this is need cause the K'dach panel has y-labels the others not...
+
+
+
+megaplot
+
+# save that beautiful plot!
+#ggsave("3SpearmanFungivsPheno.tiff", megaplot, units="cm", width=8, height=7, dpi=300)  # 80mm is New Phyt half width
+#ggsave("3SpearmanFungivsPheno.png", megaplot, units="cm", width=8, height=7, dpi=600)  # png
 ```
 
 
 
-### Network analysis: Graphical model with ecoCopul (Popovic et al.)
+### Network analysis: Graphical model with ecoCopul (Popovic et al.) --> FIGURE 4
 
 This analysis is made in two parts: a) formulate ultivariate community data model with mvabund(). I will fit a negative binomial model, and b) the actual graphical model based on that former regression model
 
-0) data prep
-```{r ecoCopula graphical model - data prep}
+```{r ecoCopula graphical model - data prep, echo=FALSE}
 Topf18.FUNGI.MEANS.3sick <- Topf18.FUNGI.MEANS.NONA[Topf18.FUNGI.MEANS.NONA$soil!="F",]
 Topf18.FUNGI.MEANS.H <-     Topf18.FUNGI.MEANS.NONA[Topf18.FUNGI.MEANS.NONA$soil=="H",]
 Topf18.FUNGI.MEANS.L <-     Topf18.FUNGI.MEANS.NONA[Topf18.FUNGI.MEANS.NONA$soil=="L",]
@@ -1491,7 +1870,7 @@ T18.W.fungiquants <- round(mvabund::mvabund(Topf18.FUNGI.MEANS.W[, c(7:16)]))
 So: because I have some fungi that do not have 0's and the NB model generally is fine I have good reasons to continue with a NB modelling in the mvabund... I also tried linera model (also mit log transformation; their residual plots all do not look good)
 
 
-```{r ecoCopula graphical model - model formulation}
+```{r ecoCopula graphical model - model formulation, echo=FALSE}
 manyglm_3sick <- manyglm(T18.3sick.fungiquants ~ Topf18.FUNGI.MEANS.3sick$soil, family="negative_binomial") # here the abundances are modelled wit hthe factor "soil""
 ccgr3sick <- cgr(manyglm_3sick)
 
@@ -1506,7 +1885,7 @@ ccgrW <- cgr(manyglm_W)
 
 ```
 
-```{r ecoCopula graphical model - plot networks}
+```{r ecoCopula graphical model - plot networks, echo=FALSE}
 # prep
 library(ggraph)
 labels <- c("A. eut.", "F. ave.", "F. oxy.", 'F. red.', 'F. sol.', 'D. pin.', 'P. ult.', 'R. sol.', "AMF", 'C. ros.')
@@ -1518,9 +1897,9 @@ colgood <- "#999999"
 # 4 plots
 net3 <- ccgr3sick$best_graph$igraph_out %>%
   ggraph("fr") + 
-  geom_edge_fan0(aes(linetype = cut(partcor, c(-1,0,1)), width=partcor)) +
-  scale_edge_width(range = c(0.3, 3)) +
-  scale_edge_linetype_manual(values=c("longdash", "solid" ), name="sign.") +
+  geom_edge_fan0(aes(linetype = cut(partcor, c(-1,0,1)), width=abs(partcor))) +
+  scale_edge_width(range = c(0.3, 3), name="partial corr.") +
+  scale_edge_linetype_manual(values=c("dotted", "solid" ), name="sign", labels = c("-", "+")) +
   geom_node_label(aes(label=labels), fontface=c(rep(3,8), 2, 4), size=labelsize) +
   theme_void() +
   ggtitle("3 infested soils") +
@@ -1529,9 +1908,9 @@ net3 <- ccgr3sick$best_graph$igraph_out %>%
 
 netH <- ccgrH$best_graph$igraph_out %>%
   ggraph("fr") +
-  geom_edge_fan0(aes(linetype = cut(partcor, c(-1,0,1)), width=partcor), color=Kolor[2]) +
+  geom_edge_fan0(aes(linetype = cut(partcor, c(-1,0,1)), width=abs(partcor)), color=Kolor[2]) +
   scale_edge_width(range = c(0.3, 3)) +
-  scale_edge_linetype_manual(values=c("longdash", "solid" )) +
+  scale_edge_linetype_manual(values=c("dotted", "solid" )) +
   geom_node_label(aes(label=labels), fontface=c(rep(3,8), 2, 4), size=labelsize, color=Kolor[2]) +
   theme_void() +
   ggtitle("Kirchlindach") +
@@ -1540,9 +1919,9 @@ netH <- ccgrH$best_graph$igraph_out %>%
 
 netL <- ccgrL$best_graph$igraph_out %>%
   ggraph("fr") + 
-  geom_edge_fan0(aes(linetype = cut(partcor, c(-1,0,1)), width=partcor), color=Kolor[3]) +
+  geom_edge_fan0(aes(linetype = cut(partcor, c(-1,0,1)), width=abs(partcor)), color=Kolor[3]) +
   scale_edge_width(range = c(0.3, 3)) +
-  scale_edge_linetype_manual(values=c("longdash", "solid" )) +
+  scale_edge_linetype_manual(values=c("dotted", "solid" )) +
   geom_node_label(aes(label=labels), fontface=c(rep(3,8), 2, 4), size=labelsize, color=Kolor[3]) +
   theme_void() +
   ggtitle("Puch") +
@@ -1551,26 +1930,27 @@ netL <- ccgrL$best_graph$igraph_out %>%
 
 netW <- ccgrW$best_graph$igraph_out %>% 
   ggraph("fr") + 
-  geom_edge_fan0(aes(linetype = cut(partcor, c(-1,0,1)), width=partcor), color=Kolor[4]) +
+  geom_edge_fan0(aes(linetype = cut(partcor, c(-1,0,1)), width=abs(partcor)), color=Kolor[4]) +
   scale_edge_width(range = c(0.3, 3), name="Partial\ncorr.") +
-  scale_edge_linetype_manual(values=c("longdash", "solid" )) +
+  scale_edge_linetype_manual(values=c("dotted", "solid")) +
   geom_node_label(aes(label=labels), fontface=c(rep(3,8), 2, 4), size=labelsize, color=Kolor[4]) +
   theme_void() +
   theme(legend.position = 'none', plot.margin = unit(mrgs, "mm"), plot.title =   element_text(size=10, vjust = 0.7)) +
   ggtitle("Neu-Eichenberg") +
-  coord_cartesian(clip = "off") 
-
+  coord_cartesian(clip = "off")
 
 # put together
-thelegend <- ggpubr::get_legend(net3 + theme(legend.box.margin = margin(3, 0, 0, 5)))
+thelegend <- ggpubr::get_legend(net3 + theme(legend.box.margin = margin(3, 10, 0, 5),
+                                               legend.title=element_text(size=8)))
 
 plot4s <- cowplot::plot_grid(net3 + theme(legend.position="none"),
                              netH, netL, netW,
                    nrow = 2)
 
 theplot <- cowplot::plot_grid(plot4s, thelegend, rel_widths = c(10,1))
-
-#ggsave("ecoCopula_4graphs_raw.tiff", theplot, units="cm", width=18, height=10, dpi=300, compression = 'lzw')
+theplot
+#ggsave("ecoCopula_4graphs.eps", theplot, units="cm", width=18, height=10, dpi=600)  # eps
+#ggsave("ecoCopula_4graphs.png", theplot, units="cm", width=18, height=10, dpi=200) # png
 
 ```
 
