@@ -64,7 +64,7 @@ thefungis <- set_names(thefungis)    #Purrr Package for set_names function
 
 theaccs <- set_names(levels(Topf18.NS$acc))
 
-soil_names <- c(`F` = "Feldbach",`H` = "Kirchlindach",`L` = "Puch",`W` = "Neu-Eichenberg")
+soil_names <- c(`F` = "Feldbach",`H` = "Kirchlindach",`L` = "Puch",`W` = "Neu-Eichenberg") # note: the original factor level coding (used for the analysis) of the 4 soils is "F", "K", "L" and "W". For the presentation of the resukts "F(eldbach)", "K(irchlindach)", "P(uch)" and N(eu-Eichenberg)" is used...
 
 soil_nms <- c(`F` = "F",`H` = "K",`L` = "P",`W` = "N")
 
